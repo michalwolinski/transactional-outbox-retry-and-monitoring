@@ -1,0 +1,62 @@
+groups:
+  - name: outbox
+    rules:
+      # What consumers feel. The threshold is the outage you tolerate plus the backoff cap: after
+      # the broker comes back, an event can still sit out one full capped delay before its next
+      # try, and that wait is lag too. 5 minutes tolerated + 300 s cap = 600 s.
+      - alert: OutboxLagHigh
+        expr: outbox_oldest_pending_age_seconds > 600
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Oldest unpublished event is {{ $value | humanizeDuration }} old'
+
+      # Pending rows behind a dead event never move on their own. Lag will catch this too, but
+      # only once those rows are old; this says why, and says it to whoever owns the aggregate.
+      - alert: OutboxAggregateParked
+        expr: outbox_held_rows > 0
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $value }} events are waiting behind a dead event of their aggregate'
+
+      # A dead event with nothing behind it does not move the lag at all. Someone still has to
+      # decide what happens to it.
+      - alert: OutboxDeadLetter
+        expr: outbox_dead_rows > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: '{{ $value }} dead events; see bin/outbox dead-letters'
+
+      # At 3 a.m. nothing is written, lag stays at zero, and a dead relay is invisible to every
+      # alert above until the morning traffic arrives. The heartbeat is what sees it.
+      - alert: OutboxRelayDown
+        expr: outbox_relays_alive < 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: 'No outbox relay has sent a heartbeat for 2 minutes'
+
+      # A lost lease is a publish that took longer than the lease, and a likely duplicate. A crash
+      # never shows up here (a dead relay sends no verdict; it counts as an unexplained failure).
+      # An occasional one is a broker hiccup; a steady rate means the lease is shorter than the
+      # broker's slow path.
+      - alert: OutboxLeaseLost
+        expr: increase(outbox_lease_lost_total[1h]) > 3
+        labels:
+          severity: ticket
+        annotations:
+          summary: 'Leases expiring mid-publish: raise the lease or find the slow publish'
+
+      # Every rule above is silent when the exporter is down, which is the worst time to be silent.
+      - alert: OutboxMetricsAbsent
+        expr: absent(outbox_relays_alive)
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: 'The outbox exporter is not being scraped'

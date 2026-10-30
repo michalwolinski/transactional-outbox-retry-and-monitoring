@@ -1,0 +1,143 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # A single event in backoff for a few minutes is routine and must not page.
+  - interval: 1m
+    input_series:
+      - series: outbox_oldest_pending_age_seconds
+        values: '0 60 120 180 240 300 0 0 0 0 0 0'
+      - series: outbox_relays_alive
+        values: '1x11'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OutboxLagHigh
+        exp_alerts: []
+
+  # The broker is down: lag grows a minute per minute, crosses 600 s at minute 11, pages at 12.
+  - interval: 1m
+    input_series:
+      - series: outbox_oldest_pending_age_seconds
+        values: '0+60x15'
+      - series: outbox_relays_alive
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OutboxLagHigh
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: OutboxLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: 'Oldest unpublished event is 12m 0s old'
+
+  # A dead event with nothing behind it: a ticket at once, never a page, and the lag stays zero.
+  - interval: 1m
+    input_series:
+      - series: outbox_dead_rows
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: outbox_held_rows
+        values: '0x19'
+      - series: outbox_oldest_pending_age_seconds
+        values: '0x19'
+      - series: outbox_relays_alive
+        values: '1x19'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: OutboxDeadLetter
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: '1 dead events; see bin/outbox dead-letters'
+      - eval_time: 19m
+        alertname: OutboxAggregateParked
+        exp_alerts: []
+      - eval_time: 19m
+        alertname: OutboxLagHigh
+        exp_alerts: []
+
+  # A dead event with two more behind it: the aggregate is parked, which pages after 15 minutes.
+  - interval: 1m
+    input_series:
+      - series: outbox_held_rows
+        values: '0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2'
+      - series: outbox_relays_alive
+        values: '1x17'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OutboxAggregateParked
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: OutboxAggregateParked
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: '2 events are waiting behind a dead event of their aggregate'
+
+  # 3 a.m.: nothing pending, lag zero, and the only relay has stopped beating.
+  - interval: 1m
+    input_series:
+      - series: outbox_oldest_pending_age_seconds
+        values: '0x10'
+      - series: outbox_relays_alive
+        values: '1 1 1 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OutboxLagHigh
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: OutboxRelayDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: OutboxRelayDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: 'No outbox relay has sent a heartbeat for 2 minutes'
+
+  # One lost lease in an hour is a broker hiccup; five is a lease that is too short.
+  - interval: 5m
+    input_series:
+      - series: outbox_lease_lost_total
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: OutboxLeaseLost
+        exp_alerts: []
+  - interval: 5m
+    input_series:
+      - series: outbox_lease_lost_total
+        values: '0 1 2 3 4 5 5 5 5 5 5 5 5'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: OutboxLeaseLost
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: 'Leases expiring mid-publish: raise the lease or find the slow publish'
+
+  # The last scrape is at minute 1. The series goes stale after Prometheus' five-minute lookback,
+  # absent() turns true at minute 6, and the `for` holds it five more: it pages at minute 11.
+  - interval: 1m
+    input_series:
+      - series: outbox_relays_alive
+        values: '1 1 _ _ _ _ _ _ _ _ _ _ _ _ _'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OutboxMetricsAbsent
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: OutboxMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: 'The outbox exporter is not being scraped'

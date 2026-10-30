@@ -1,0 +1,35 @@
+{
+    "preset": "psr12",
+    "rules": {
+        "declare_strict_types": true,
+        "strict_param": true,
+        "yoda_style": true,
+        "nullable_type_declaration": true,
+        "fully_qualified_strict_types": {
+            "import_symbols": false
+        },
+        "global_namespace_import": {
+            "import_classes": true,
+            "import_functions": false,
+            "import_constants": false
+        },
+        "native_function_invocation": false,
+        "single_line_throw": false,
+        "ordered_imports": {
+            "imports_order": [
+                "class",
+                "function",
+                "const"
+            ],
+            "sort_algorithm": "alpha"
+        },
+        "no_unused_imports": true,
+        "no_superfluous_phpdoc_tags": {
+            "allow_mixed": true
+        }
+    },
+    "exclude": [
+        "vendor",
+        ".phpunit.cache"
+    ]
+}

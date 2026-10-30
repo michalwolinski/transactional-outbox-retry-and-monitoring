@@ -1,0 +1,123 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Outbox\Broker\PermanentPublishFailure;
+use Outbox\Broker\ScriptedBroker;
+use Outbox\Broker\TransientPublishFailure;
+use Outbox\Database;
+use Outbox\Monitoring\OutboxHealth;
+use Outbox\Monitoring\PrometheusExporter;
+use Outbox\OutboxMessage;
+use Outbox\OutboxStore;
+use Outbox\OutboxWriter;
+use Outbox\Relay;
+use Outbox\Retry\RetryPolicy;
+use Random\Engine\Xoshiro256StarStar;
+use Random\Randomizer;
+use Time\Duration;
+
+require __DIR__.'/../vendor/autoload.php';
+
+$pdo = Database::connect();
+$store = new OutboxStore($pdo);
+$metrics = static fn (): string => new PrometheusExporter()->render(new OutboxHealth($pdo)->snapshot());
+
+$command = $argv[1] ?? 'help';
+
+switch ($command) {
+    case 'migrate':
+        echo Database::migrate($pdo) ? "schema created\n" : "schema already exists, nothing changed\n";
+
+        break;
+
+    case 'metrics':
+        echo $metrics();
+
+        break;
+
+    case 'dead-letters':
+        foreach ($store->deadLetters() as $dead) {
+            printf(
+                "%s  %-10s %-14s attempts=%d held=%d  %s\n",
+                $dead['event_id'],
+                $dead['aggregate_id'],
+                $dead['event_type'],
+                $dead['attempts'],
+                $dead['held'],
+                $dead['last_error'] ?? '',
+            );
+        }
+
+        break;
+
+    case 'requeue':
+        $eventId = $argv[2] ?? throw new InvalidArgumentException('usage: bin/outbox requeue <event-id>');
+        echo $store->requeue($eventId) ? "requeued {$eventId}\n" : "{$eventId} is not dead\n";
+
+        break;
+
+    case 'demo':
+        // Destructive: drops and recreates the tables. A short real-time run: small backoff so it
+        // finishes in seconds, a seeded jitter so it runs the same way twice, and a broker that
+        // fails in two of the three ways the policy distinguishes.
+        Database::reset($pdo);
+        $broker = new ScriptedBroker();
+        $policy = new RetryPolicy(new Randomizer(new Xoshiro256StarStar(2026)), maxDelay: Duration::fromSeconds(2));
+        $relay = new Relay($store, $broker, $policy, relayId: 'demo-relay', lease: Duration::fromSeconds(5));
+        $writer = new OutboxWriter($pdo);
+
+        $pdo->beginTransaction();
+        $events = [
+            'A placed' => $writer->append('order-A', 'order.placed', ['total' => 120]),
+            'A paid' => $writer->append('order-A', 'order.paid', ['total' => 120]),
+            'B placed' => $writer->append('order-B', 'order.placed', ['total' => 80]),
+            'B paid' => $writer->append('order-B', 'order.paid', ['total' => 80]),
+            'C placed' => $writer->append('order-C', 'order.placed', ['total' => 45]),
+        ];
+        $pdo->commit();
+
+        $broker->script($events['A placed'], new TransientPublishFailure('timeout'), new TransientPublishFailure('timeout'));
+        $broker->script($events['B placed'], new PermanentPublishFailure('payload rejected by schema registry'));
+        $names = array_flip($events);
+
+        $drain = static function () use ($relay, $broker, $names): void {
+            for ($pass = 1, $idle = 0; 2 > $idle; $pass++) {
+                $before = count($broker->published);
+                $report = $relay->runOnce();
+                $sent = array_map(static fn (OutboxMessage $message): string => $names[$message->eventId], array_slice($broker->published, $before));
+                printf("  pass %d  %s%s\n", $pass, $report, [] === $sent ? '' : '  -> '.implode(', ', $sent));
+                $idle = 0 === $report->claimed ? $idle + 1 : 0;
+                sleep(1);
+            }
+        };
+        $show = static function () use ($metrics): void {
+            foreach (explode("\n", $metrics()) as $line) {
+                if ('' !== $line && false === str_starts_with($line, '#')) {
+                    echo "  {$line}\n";
+                }
+            }
+        };
+
+        echo "relay, until idle:\n";
+        $drain();
+        echo "\n/metrics:\n";
+        $show();
+        echo "\ndead letters:\n";
+        foreach ($store->deadLetters() as $dead) {
+            printf("  %s (%s) held=%d  %s\n", $names[$dead['event_id']], $dead['aggregate_id'], $dead['held'], $dead['last_error']);
+        }
+
+        echo "\nthe schema is fixed; requeue B placed:\n";
+        $store->requeue($events['B placed']);
+        $drain();
+        echo "\n/metrics:\n";
+        $show();
+
+        break;
+
+    default:
+        echo "usage: bin/outbox migrate|metrics|dead-letters|requeue <event-id>|demo\n";
+        echo "       demo DROPS and recreates the outbox tables; point it at the compose database only\n";
+}

@@ -1,0 +1,6 @@
+# The image installs its own dependencies from composer.lock; a host vendor/ copied over them
+# would make the container run whatever the host last installed, on whatever PHP it had.
+/vendor/
+/.git/
+/.phpunit.cache/
+/.env

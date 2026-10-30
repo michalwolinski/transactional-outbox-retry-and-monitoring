@@ -1,0 +1,42 @@
+{
+    "name": "michalwolinski/transactional-outbox-retry-and-monitoring",
+    "description": "Transactional outbox, part two: lease-based claiming, classified failures, backoff with full jitter, per-aggregate ordering, dead letters, and the metrics and alerts that tell you it is working. Plain PHP 8.6 + PDO + PostgreSQL 18.",
+    "type": "project",
+    "license": "MIT",
+    "homepage": "https://wolinski.com/blog/transactional-outbox-retry-and-monitoring.html",
+    "authors": [
+        {
+            "name": "Michał Woliński",
+            "homepage": "https://wolinski.com",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": ">=8.6",
+        "ext-pdo": "*",
+        "ext-pdo_pgsql": "*"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.32",
+        "phpunit/phpunit": "^13.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Outbox\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Outbox\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": false
+    },
+    "scripts": {
+        "test": "phpunit",
+        "cs": "pint --test",
+        "cs:fix": "pint"
+    }
+}
